@@ -1,0 +1,317 @@
+---
+title: "Mass imputation: simulation"
+author: Tommi H?rk?nen
+output: html_document
+---
+
+```{r settings, echo=FALSE}
+library(rvest)
+library(plyr)
+library(dplyr)
+library(data.table)
+library(dtplyr)
+library(randomForest)
+library(rpart)
+library(mice)
+library(lubridate)
+library(parallel)
+
+options(stringsAsFactors=FALSE,
+        xtable.type="html",
+        width=110)
+knitr::opts_chunk$set(comment=NA, echo=FALSE, tidy=TRUE)
+```
+
+# Generate data
+
+
+```{r parallel}
+n.sim <- 2 # number of simulated datasets
+N <- 10^5 # population
+n_1 <- 10^3 # survey
+n_5 <- 5*10^3
+n_10 <- 10^4
+n_20 <- 2*10^4
+
+
+mass.f <- function(i) {
+    cat(i, "\r")
+  
+  
+  H <- within(data.frame(x1=rnorm(N, 2, 1), x2=rnorm(N, -2, 1)), {
+    x3 <- rnorm(N, 0.5*x1 + 0.5*x2, 2)
+    x4 <- rnorm(N, 0.3333*x1 + 0.3333*x2 + 0.3333*x3, 2 )
+    lp1 <- -2 + 0.5*x1 + 0.2*x2 + 0.1*x3 + 0.2*x4
+    lp2 <- -2 + 0.5*x1 + 0.2*x2 + 0.1*x3 + 0.2*x4
+    lp3 <- 0.5*x1 + 0.2*x2 + 0.1*x3 + 0.2*x4
+    lp4 <- 0
+    P1 <- exp(lp1)/(exp(lp2)+ exp(lp3)+1+exp(lp4))
+    P2 <- exp(lp2)/(exp(lp1)+ exp(lp3)+1+exp(lp2))
+    P3 <- exp(lp3)/(exp(lp2)+ exp(lp1)+1+exp(lp3))
+    P4 <- 1/(exp(lp2)+ exp(lp3)+exp(lp1)+1)
+    mChoices <- t(apply(cbind(P1,P2,P3,P4), 1, rmultinom, n = 1, size = 1))
+    x5 <- apply(mChoices, 1, function(x) which(x==1))
+    lp <- -1 + 0.05*x1 + 0.2*x2 + 0.1*x3 + 0.02*x4 + log(1.5)*(x5==1) + log(5)*(x5==2) + log(2)*(x5==3)
+    y <- as.numeric(runif(N) < plogis(lp)) })
+  d <- subset(H, select= -c(mChoices,lp1,lp2,lp3,lp4,P1,P2,P3,P4,lp))
+
+  D<- lapply(list(d_1= within(data.frame(survey=c(rep(TRUE, n_1), rep(FALSE, N-n_1)),
+                                        d), {
+                                          x3.obs <- d$x3
+                                          x3.obs[!survey] <- NA
+                                          x4.obs <- d$x4
+                                          x4.obs[!survey] <- NA
+                                          x5.obs <- d$x5
+                                          x5.obs[!survey] <- NA}),
+                  d_5= within(data.frame(survey=c(rep(TRUE, n_5), rep(FALSE, N-n_5)),
+                                        d), {
+                                          x3.obs <- d$x3
+                                          x3.obs[!survey] <- NA
+                                          x4.obs <- d$x4
+                                          x4.obs[!survey] <- NA
+                                          x5.obs <- d$x5
+                                          x5.obs[!survey] <- NA}),
+                  
+                  d_10= within(data.frame(survey=c(rep(TRUE, n_10), rep(FALSE, N-n_10)),
+                                        d), {
+                                          x3.obs <- d$x3
+                                          x3.obs[!survey] <- NA
+                                          x4.obs <- d$x4
+                                          x4.obs[!survey] <- NA
+                                          x5.obs <- d$x5
+                                          x5.obs[!survey] <- NA}),
+                d_20= within(data.frame(survey=c(rep(TRUE, n_20), rep(FALSE, N-n_20)),
+                                        d), {
+                                          x3.obs <- d$x3
+                                          x3.obs[!survey] <- NA
+                                          x4.obs <- d$x4
+                                          x4.obs[!survey] <- NA
+                                          x5.obs <- d$x5
+                                          x5.obs[!survey] <- NA})), 
+                function(x) {
+                  x
+        
+                })
+
+
+res.full <- glm(y ~ x1 + x2 + x3 + x4 + factor(x5, levels = c(4,1,2,3)), data=d, family="binomial")
+    ## summary(res.full)
+
+
+### Mass imputation
+d.mi_1 <- mice(subset(D$d_1, select=-c(x3,x4,x5,survey)), m=25, method="cart", maxit=15,
+                minbucket = 15, cp = 1e-04, printFlag=FALSE)
+
+cor.sim_1 <- cbind(sim=i, cor(cbind(complete(d.mi_1),d$x3,d$x4,d$x5),method="spearman", use="p"))
+
+### Analysis
+res.full <- glm(y ~ x1 + x2 + x3 + x4+ factor(x5, levels = c(4,1,2,3)), data=D$d_1, family="binomial")
+## summary(res.full)
+res.survey_1 <- glm(y ~ x1 + x2 + x3 + x4+ factor(x5, levels = c(4,1,2,3)), data=subset(D$d_1, survey==TRUE), family="binomial")
+## summary(res.survey)
+## for (j in 1:d.mi$m)
+##   print(glm(y ~ x1 + x2 + x3.obs, data=complete(d.mi, j), family="binomial")$coefficients)
+mi.res_1 <- pool(with(d.mi_1, glm(y ~ x1 + x2 + x3.obs + x4.obs+ factor(x5.obs, levels = c(4,1,2,3)), family="binomial")))
+## summary(mi.res)
+
+### Mass imputation
+d.mi_5 <- mice(subset(D$d_5, select=-c(x3,x4,x5,survey)), m=25, method="cart", maxit=15,
+                minbucket = 15, cp = 1e-04, printFlag=FALSE)
+
+cor.sim_5 <- cbind(sim=i, cor(cbind(complete(d.mi_5),d$x3,d$x4,d$x5),method="spearman", use="p"))
+
+### Analysis
+res.full <- glm(y ~ x1 + x2 + x3 + x4+ factor(x5, levels = c(4,1,2,3)), data=D$d_5, family="binomial")
+## summary(res.full)
+res.survey_5 <- glm(y ~ x1 + x2 + x3 + x4+ factor(x5, levels = c(4,1,2,3)), data=subset(D$d_5, survey==TRUE), family="binomial")
+## summary(res.survey)
+## for (j in 1:d.mi$m)
+##   print(glm(y ~ x1 + x2 + x3.obs, data=complete(d.mi, j), family="binomial")$coefficients)
+mi.res_5 <- pool(with(d.mi_5, glm(y ~ x1 + x2 + x3.obs + x4.obs+ factor(x5.obs, levels = c(4,1,2,3)), family="binomial")))
+## summary(mi.res)
+
+### Mass imputation
+    d.mi_10 <- mice(subset(D$d_10, select=-c(x3,x4,x5,survey)), m=25, method="cart", maxit=15,
+                 minbucket = 15, cp = 1e-04, printFlag=FALSE)
+    cor.sim_10 <- cbind(sim=i, cor(cbind(complete(d.mi_10),d$x3,d$x4,d$x5),method="spearman", use="p"))
+
+
+### Analysis
+    res.full <- glm(y ~ x1 + x2 + x3 + x4+ factor(x5, levels = c(4,1,2,3)), data=D$d_10, family="binomial")
+    ## summary(res.full)
+    res.survey_10 <- glm(y ~ x1 + x2 + x3 + x4+ factor(x5, levels = c(4,1,2,3)), data=subset(D$d_10, survey==TRUE), family="binomial")
+    ## summary(res.survey)
+    ## for (j in 1:d.mi$m)
+    ##   print(glm(y ~ x1 + x2 + x3.obs, data=complete(d.mi, j), family="binomial")$coefficients)
+    mi.res_10 <- pool(with(d.mi_10, glm(y ~ x1 + x2 + x3.obs + x4.obs+ factor(x5.obs, levels = c(4,1,2,3)), family="binomial")))
+    ## summary(mi.res)
+  ### Mass imputation
+  d.mi_20 <- mice(subset(D$d_20, select=-c(x3,x4,x5,survey)), m=25, method="cart", maxit=15,
+                  minbucket = 15, cp = 1e-04, printFlag=FALSE)
+  
+  cor.sim_20 <- cbind(sim=i, cor(cbind(complete(d.mi_20),d$x3,d$x4,d$x5),method="spearman", use="p"))
+
+
+  ### Analysis
+  res.survey_20 <- glm(y ~ x1 + x2 + x3 + x4+ factor(x5, levels = c(4,1,2,3)), data=subset(D$d_20, survey==TRUE), family="binomial")
+  ## summary(res.survey)
+  ## for (j in 1:d.mi$m)
+  ##   print(glm(y ~ x1 + x2 + x3.obs, data=complete(d.mi, j), family="binomial")$coefficients)
+  mi.res_20 <- pool(with(d.mi_20, glm(y ~ x1 + x2 + x3.obs + x4.obs+ factor(x5.obs, levels = c(4,1,2,3)), family="binomial")))
+
+  
+res.x3_1 <- c(full=summary(res.full)$coefficients["x3","Estimate"],
+               survey=summary(res.survey_1)$coefficients["x3","Estimate"],
+               mass.mi=subset(summary(mi.res_1), term=="x3.obs")[,"estimate"])
+res.x4_1 <- c(full=summary(res.full)$coefficients["x4","Estimate"],
+               survey=summary(res.survey_1)$coefficients["x4","Estimate"],
+               mass.mi=subset(summary(mi.res_1), term=="x4.obs")[,"estimate"])
+res.x5_1 <- c(full_1 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Estimate"], 
+              full_2 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Estimate"],
+              full_3 =summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Estimate"],
+               survey_1=summary(res.survey_1)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Estimate"],
+              survey_2=summary(res.survey_1)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Estimate"],
+              survey_3=summary(res.survey_1)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Estimate"],
+               mass.mi_1=subset(summary(mi.res_1), term=="factor(x5.obs, levels = c(4, 1, 2, 3))1")[,"estimate"],
+              mass.mi_2 =subset(summary(mi.res_1), term=="factor(x5.obs, levels = c(4, 1, 2, 3))2")[,"estimate"],
+              mass.mi_3 =subset(summary(mi.res_1), term=="factor(x5.obs, levels = c(4, 1, 2, 3))3")[,"estimate"])
+
+res.x3.se_1 <- c(full=summary(res.full)$coefficients["x3","Std. Error"],
+                  survey=summary(res.survey_1)$coefficients["x3","Std. Error"],
+                  mass.mi=subset(summary(mi.res_1), term=="x3.obs")[,"std.error"])
+res.x4.se_1 <- c(full=summary(res.full)$coefficients["x4","Std. Error"],
+                  survey=summary(res.survey_1)$coefficients["x4","Std. Error"],
+                  mass.mi=subset(summary(mi.res_1), term=="x4.obs")[,"std.error"])
+res.x5.se_1 <- c(full_1 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Std. Error"], 
+              full_2 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Std. Error"],
+              full_3 =summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Std. Error"],
+              survey_1=summary(res.survey_1)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Std. Error"],
+              survey_2=summary(res.survey_1)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Std. Error"],
+              survey_3=summary(res.survey_1)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Std. Error"],
+              mass.mi_1=subset(summary(mi.res_1), term=="factor(x5.obs, levels = c(4, 1, 2, 3))1")[,"std.error"],
+              mass.mi_2 =subset(summary(mi.res_1), term=="factor(x5.obs, levels = c(4, 1, 2, 3))2")[,"std.error"],
+              mass.mi_3 =subset(summary(mi.res_1), term=="factor(x5.obs, levels = c(4, 1, 2, 3))3")[,"std.error"])
+
+
+### Collect results:
+
+res.x3_5 <- c(full=summary(res.full)$coefficients["x3","Estimate"],
+               survey=summary(res.survey_5)$coefficients["x3","Estimate"],
+               mass.mi=subset(summary(mi.res_5), term=="x3.obs")[,"estimate"])
+res.x4_5 <- c(full=summary(res.full)$coefficients["x4","Estimate"],
+               survey=summary(res.survey_5)$coefficients["x4","Estimate"],
+               mass.mi=subset(summary(mi.res_5), term=="x4.obs")[,"estimate"])
+res.x5_5 <- c(full_1 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Estimate"], 
+              full_2 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Estimate"],
+              full_3 =summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Estimate"],
+              survey_1=summary(res.survey_5)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Estimate"],
+              survey_2=summary(res.survey_5)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Estimate"],
+              survey_3=summary(res.survey_5)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Estimate"],
+              mass.mi_1=subset(summary(mi.res_5), term=="factor(x5.obs, levels = c(4, 1, 2, 3))1")[,"estimate"],
+              mass.mi_2 =subset(summary(mi.res_5), term=="factor(x5.obs, levels = c(4, 1, 2, 3))2")[,"estimate"],
+              mass.mi_3 =subset(summary(mi.res_5), term=="factor(x5.obs, levels = c(4, 1, 2, 3))3")[,"estimate"])
+
+res.x3.se_5 <- c(full=summary(res.full)$coefficients["x3","Std. Error"],
+                  survey=summary(res.survey_5)$coefficients["x3","Std. Error"],
+                  mass.mi=subset(summary(mi.res_5), term=="x3.obs")[,"std.error"])
+res.x4.se_5 <- c(full=summary(res.full)$coefficients["x4","Std. Error"],
+                  survey=summary(res.survey_5)$coefficients["x4","Std. Error"],
+                  mass.mi=subset(summary(mi.res_5), term=="x4.obs")[,"std.error"])
+res.x5.se_5 <- c(full_1 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Std. Error"], 
+              full_2 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Std. Error"],
+              full_3 =summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Std. Error"],
+              survey_1=summary(res.survey_5)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Std. Error"],
+              survey_2=summary(res.survey_5)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Std. Error"],
+              survey_3=summary(res.survey_5)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Std. Error"],
+              mass.mi_1=subset(summary(mi.res_5), term=="factor(x5.obs, levels = c(4, 1, 2, 3))1")[,"std.error"],
+              mass.mi_2 =subset(summary(mi.res_5), term=="factor(x5.obs, levels = c(4, 1, 2, 3))2")[,"std.error"],
+              mass.mi_3 =subset(summary(mi.res_5), term=="factor(x5.obs, levels = c(4, 1, 2, 3))3")[,"std.error"])
+
+### Collect results:
+
+    res.x3_10 <- c(full=summary(res.full)$coefficients["x3","Estimate"],
+                survey=summary(res.survey_10)$coefficients["x3","Estimate"],
+                mass.mi=subset(summary(mi.res_10), term=="x3.obs")[,"estimate"])
+    res.x4_10 <- c(full=summary(res.full)$coefficients["x4","Estimate"],
+                survey=summary(res.survey_10)$coefficients["x4","Estimate"],
+                mass.mi=subset(summary(mi.res_10), term=="x4.obs")[,"estimate"])
+    res.x5_10 <- c(full_1 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Estimate"], 
+              full_2 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Estimate"],
+              full_3 =summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Estimate"],
+              survey_1=summary(res.survey_10)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Estimate"],
+              survey_2=summary(res.survey_10)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Estimate"],
+              survey_3=summary(res.survey_10)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Estimate"],
+              mass.mi_1=subset(summary(mi.res_10), term=="factor(x5.obs, levels = c(4, 1, 2, 3))1")[,"estimate"],
+              mass.mi_2 =subset(summary(mi.res_10), term=="factor(x5.obs, levels = c(4, 1, 2, 3))2")[,"estimate"],
+              mass.mi_3 =subset(summary(mi.res_10), term=="factor(x5.obs, levels = c(4, 1, 2, 3))3")[,"estimate"])
+
+    res.x3.se_10 <- c(full=summary(res.full)$coefficients["x3","Std. Error"],
+                   survey=summary(res.survey_10)$coefficients["x3","Std. Error"],
+                   mass.mi=subset(summary(mi.res_10), term=="x3.obs")[,"std.error"])
+    res.x4.se_10 <- c(full=summary(res.full)$coefficients["x4","Std. Error"],
+                   survey=summary(res.survey_10)$coefficients["x4","Std. Error"],
+                   mass.mi=subset(summary(mi.res_10), term=="x4.obs")[,"std.error"])
+    res.x5.se_10 <- c(full_1 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Std. Error"], 
+              full_2 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Std. Error"],
+              full_3 =summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Std. Error"],
+              survey_1=summary(res.survey_10)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Std. Error"],
+              survey_2=summary(res.survey_10)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Std. Error"],
+              survey_3=summary(res.survey_10)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Std. Error"],
+              mass.mi_1=subset(summary(mi.res_10), term=="factor(x5.obs, levels = c(4, 1, 2, 3))1")[,"std.error"],
+              mass.mi_2 =subset(summary(mi.res_10), term=="factor(x5.obs, levels = c(4, 1, 2, 3))2")[,"std.error"],
+              mass.mi_3 =subset(summary(mi.res_10), term=="factor(x5.obs, levels = c(4, 1, 2, 3))3")[,"std.error"])
+
+    ### Collect results:
+  res.x3_20 <- c(full=summary(res.full)$coefficients["x3","Estimate"],
+                 survey=summary(res.survey_20)$coefficients["x3","Estimate"],
+                 mass.mi=subset(summary(mi.res_20), term=="x3.obs")[,"estimate"])
+  res.x4_20 <- c(full=summary(res.full)$coefficients["x4","Estimate"],
+                 survey=summary(res.survey_20)$coefficients["x4","Estimate"],
+                 mass.mi=subset(summary(mi.res_20), term=="x4.obs")[,"estimate"])
+  res.x5_20 <- c(full_1 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Estimate"], 
+               full_2 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Estimate"],
+               full_3 =summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Estimate"],
+               survey_1=summary(res.survey_20)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Estimate"],
+               survey_2=summary(res.survey_20)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Estimate"],
+               survey_3=summary(res.survey_20)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Estimate"],
+               mass.mi_1=subset(summary(mi.res_20), term=="factor(x5.obs, levels = c(4, 1, 2, 3))1")[,"estimate"],
+               mass.mi_2 =subset(summary(mi.res_20), term=="factor(x5.obs, levels = c(4, 1, 2, 3))2")[,"estimate"],
+               mass.mi_3 =subset(summary(mi.res_20), term=="factor(x5.obs, levels = c(4, 1, 2, 3))3")[,"estimate"])
+
+  res.x3.se_20 <- c(full=summary(res.full)$coefficients["x3","Std. Error"],
+                    survey=summary(res.survey_20)$coefficients["x3","Std. Error"],
+                    mass.mi=subset(summary(mi.res_20), term=="x3.obs")[,"std.error"])
+  res.x4.se_20 <- c(full=summary(res.full)$coefficients["x4","Std. Error"],
+                    survey=summary(res.survey_20)$coefficients["x4","Std. Error"],
+                    mass.mi=subset(summary(mi.res_20), term=="x4.obs")[,"std.error"])
+  res.x5.se_20 <- c(full_1 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Std. Error"], 
+                  full_2 = summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Std. Error"],
+                  full_3 =summary(res.full)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Std. Error"],
+                  survey_1=summary(res.survey_20)$coefficients["factor(x5, levels = c(4, 1, 2, 3))1", "Std. Error"],
+                  survey_2=summary(res.survey_20)$coefficients["factor(x5, levels = c(4, 1, 2, 3))2", "Std. Error"],
+                  survey_3=summary(res.survey_20)$coefficients["factor(x5, levels = c(4, 1, 2, 3))3", "Std. Error"],
+                  mass.mi_1=subset(summary(mi.res_20), term=="factor(x5.obs, levels = c(4, 1, 2, 3))1")[,"std.error"],
+                  mass.mi_2 =subset(summary(mi.res_20), term=="factor(x5.obs, levels = c(4, 1, 2, 3))2")[,"std.error"],
+                  mass.mi_3 =subset(summary(mi.res_20), term=="factor(x5.obs, levels = c(4, 1, 2, 3))3")[,"std.error"])
+
+  
+  
+  
+    return(list(est=rbind(res.x3_1,res.x4_1,res.x5_1,res.x3_5,res.x4_5,res.x5_5,res.x3_10,res.x4_10,res.x5_10,res.x3_20,res.x4_20,res.x5_20), se=rbind(res.x3.se_1, res.x4.se_1,res.x5.se_1,res.x3.se_5, res.x4.se_5, res.x5.se_5, res.x3.se_10, res.x4.se_10, res.x5.se_10, res.x3.se_20, res.x4.se_20, res.x5.se_20), corsim_1=cor.sim_1, corsim_5=cor.sim_5, corsim_10=cor.sim_10, corsim_20 =cor.sim_20))
+}
+
+timestamp()
+mc.res <- mclapply(1:n.sim, mass.f, mc.cores=10)
+timestamp()
+save(mc.res, file = paste0("mc.res_30sim-", format(Sys.Date(), format="%Y-%m-%d"),".Rdata"))
+```
+
+```{r parallel2}
+
+timestamp()
+mc.res <- mclapply(1:n.sim, mass.f, mc.cores=10)
+timestamp()
+save(mc.res, file = paste0("mc.res_60sim-", format(Sys.Date(), format="%Y-%m-%d"),".Rdata"))
+
+```
+
