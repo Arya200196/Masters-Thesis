@@ -1,0 +1,600 @@
+---
+title: "CR model"
+author: "Arya"
+date: "9/16/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(mstate)
+library(thlVerse)
+library(thlConnect)
+library(RPostgres)
+library(plyr)
+library(dplyr)
+library(dbplyr)
+library(tidyr)
+library(rms)
+library(survminer)
+library(stringr)
+library(rvest)
+library(data.table)
+library(dtplyr)
+library(randomForest)
+library(rpart)
+library(mice)
+library(lubridate)
+library(parallel)
+library(survival)
+library(eha)
+library(naniar)
+library(data.table)
+ph <- thlDbConnect(dbengine="postgres", database="pubhealth", driver = "RPostgres")
+
+```
+
+```{r Nelson-Aaalen, include=FALSE}
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```
+
+```{r survey data, include=FALSE}
+#########################################################################################
+#                                SURVEY DATA                                            #              
+#########################################################################################
+  
+tbl1 <- tbl(ph, in_schema("popasco", "t00_15_089_2020_06_02"))
+tbl2 <- tbl(ph, in_schema("popasco", "t00_15_089_death_2020_07_27"))
+tbl3 <- tbl(ph, in_schema("popasco", "t00_15_089_hilmo_2020_06_02")) 
+tbl4 <- full_join(tbl1, tbl2, by="_random_id_") %>% full_join(tbl3, by="_random_id_") %>%
+  filter(((!is.na(tulo_pvm) & (tulo_pvm > as.Date("2000-07-01"))) | is.na(tulo_pvm)) & (ika2>= 30)) %>% collect()
+strings <- c("I20","I21","I22","I23","I24","I25", NA)
+variables <- c("dg_paa_syy_10","dg_sivu_syy_10_1","dg_sivu_syy_10_2",
+               "dg_paa_oire_10","dg_sivu_oire_10_1","dg_sivu_oire_10_2","dg_e_koodi_10")
+  
+tbl4 <- tbl4 %>%
+  mutate(age_diagnosis = ifelse(is.na(tulo_pvm),NA, 
+                                ifelse(pmin(tulo_pvm,as.Date("2000-07-01"))==tulo_pvm,
+                                       ika2,as.duration("2000-07-01" %--% tulo_pvm) / dyears(1)
+                                       + ika2)),
+         age_death = ifelse(is.na(tk01_kuolinaika),NA,
+                            as.duration("2000-07-01" %--% tk01_kuolinaika) / dyears(1) + ika2),
+         age_June30_2018 = as.duration("2000-07-01" %--% "2018-06-30") / dyears(1) + ika2)
+tbl4$age_death <- ifelse(tbl4$age_death > tbl4$age_June30_2018, NA, tbl4$age_death) 
+tbl4$age_diagnosis <- ifelse(tbl4$age_diagnosis > tbl4$age_June30_2018, NA, tbl4$age_diagnosis) 
+
+#survey data modification and selection of first IHD
+
+tbl4 <- tbl4 %>% rename(regid ='_random_id_' , age_July1_2000 = ika2, sex = sp2) 
+tbl4 <- tbl4 %>% mutate_at(.vars = variables , function(x) substr(x, 1, 3)) 
+tld <- tbl4
+p <- unique(unlist(Reduce(union, list(tld$dg_paa_syy_10,tld$dg_sivu_syy_10_1,
+                                      tld$dg_sivu_syy_10_2,tld$dg_paa_oire_10,
+                                      tld$dg_sivu_oire_10_1,tld$dg_sivu_oire_10_2,
+                                      tld$dg_e_koodi_10), accumulate = TRUE)))
+psub <- subset(p, (!p %in% strings))
+tld <- tld %>% replace_with_na_at(.vars = variables,condition = ~.x %in% psub)  
+tld <- tld %>% filter_at(.vars = vars(dg_paa_syy_10,dg_sivu_syy_10_1,dg_sivu_syy_10_2,
+                                      dg_paa_oire_10,dg_sivu_oire_10_1,dg_sivu_oire_10_2,
+                                      dg_e_koodi_10),
+                         .vars_predicate =any_vars(str_detect(. , paste0("^(", paste
+                                                                         (strings, 
+                                                                           collapse = "|"),")")
+                                                              ,negate = FALSE)))
+
+tld_firstHD <- tld %>% group_by(regid) %>% arrange(tulo_pvm) %>% filter(row_number() == 1) %>% 
+  ungroup() %>% arrange(regid)
+tld_firstHD <- tld_firstHD %>%mutate(koodi=coalesce(dg_paa_syy_10,dg_sivu_syy_10_1,
+                                                    dg_sivu_syy_10_2,dg_paa_oire_10,
+                                                    dg_sivu_oire_10_1,dg_sivu_oire_10_2,
+                                                    dg_e_koodi_10))
+  
+#survey data compiling
+
+tbl4_full <- full_join(tbl4, tld_firstHD, by = c("regid", "age_July1_2000", "sex",
+                                                 "m_tupakka3", "kol_114","kol_hdl_115", 
+                                                 "mit1_systbp1","mit1_diastbp1",
+                                                 "mit1_systbp2","mit1_diastbp2",
+                                                 "bmii_paino","bmii_pituus","kys1_k27",
+                                                 "kys1_k38","kys1_k49","kys1_k39_m3", 
+                                                 "kys1_k39_m1", "kys1_k39_m4", 
+                                                 "age_diagnosis", "age_death", 
+                                                 "age_June30_2018"), suffix = c("","") )
+tbl4_full <- tbl4_full %>% select(regid, age_July1_2000,tulo_pvm, age_diagnosis,tk01_kuolinaika, age_death,age_June30_2018,
+                                  sex,m_tupakka3,kol_114,kol_hdl_115,mit1_systbp1,mit1_diastbp1,
+                                  mit1_systbp2,mit1_diastbp2,bmii_paino,bmii_pituus,kys1_k27,kys1_k38,
+                                  kys1_k49,kys1_k39_m3, kys1_k39_m1,kys1_k39_m4,koodi)
+
+tbl4_full <- tbl4_full %>%
+  arrange(rowSums(is.na(.))) %>%        
+  distinct(regid, .keep_all = TRUE)
+#MI only on survey data 
+
+survey <- tbl4_full %>% select(regid, age_July1_2000,tulo_pvm, age_diagnosis,tk01_kuolinaika,
+                                age_death,age_June30_2018,sex,m_tupakka3, kol_114,kol_hdl_115,
+                                mit1_systbp1,mit1_diastbp1,mit1_systbp2,mit1_diastbp2,
+                                bmii_paino,bmii_pituus,kys1_k27,kys1_k38,kys1_k49,
+                                kys1_k39_m3,kys1_k39_m1, kys1_k39_m4)
+survey <- survey %>% mutate(ini_stat = ifelse(is.na(survey$age_diagnosis), 1, 
+                                                  ifelse(age_diagnosis > age_July1_2000,1,2)),
+                                healthy_stat = ifelse(is.na(survey$age_diagnosis), 1,
+                                                      as.numeric(age_diagnosis > age_July1_2000)),
+                                disease_stat = ifelse(is.na(survey$age_diagnosis), 0, 1),
+                                death_stat =ifelse(is.na(survey$age_death), 0, 1),
+                                ini_time = ifelse(ini_stat==1, age_July1_2000, age_diagnosis)) 
+
+#r data modifications
+
+survey$age_death <- ifelse(survey$death_stat==1, survey$age_death, 
+                             survey$age_June30_2018) 
+survey$age_diagnosis <- ifelse(survey$disease_stat==1, 
+                                 survey$age_diagnosis, survey$age_death) 
+survey$age_death <- ifelse((survey$age_diagnosis == survey$age_death), 
+                             (survey$age_death+ (0.5/365)),
+                             survey$age_death) 
+survey <- subset(survey, age_diagnosis < age_death)
+survey <- subset(survey, select = -c(tulo_pvm, tk01_kuolinaika))
+survey$regid <- 1:nrow(survey)
+survey <- as.data.frame(survey)
+trans_mat <- trans.illdeath()
+ms_survey <- msprep(time = c(NA,"age_diagnosis", "age_death" ),
+                     status = c(NA,"disease_stat","death_stat"),
+                     data = survey,
+                     trans = trans_mat,
+                     start = list(state = survey$ini_stat, time = survey$ini_time),
+                     id = "regid",
+                     keep = c("sex","m_tupakka3","kol_114","kol_hdl_115", "mit1_systbp1", "mit1_diastbp1",
+                              "mit1_systbp2","mit1_diastbp2", "bmii_paino","bmii_pituus","kys1_k27",
+                              "kys1_k38","kys1_k49","kys1_k39_m3","kys1_k39_m1", "kys1_k39_m4"))
+ms_survey$Tstop <- ifelse(ms_survey$Tstart==ms_survey$Tstop, 
+                           ms_survey$Tstop+ 0.5/365,ms_survey$Tstop)  
+n1 <- table(survey$healthy_stat)[1]
+n2 <- table(survey$disease_stat)[2]
+n12 <- sum(ms_survey[(ms_survey$from==1) & (ms_survey$to==2),]$status)
+n13 <- sum(ms_survey[(ms_survey$from==1) & (ms_survey$to==3),]$status)
+n11 <- n1 - (n12 + n13)
+n22 <- n2
+n33 <- table(survey$death_stat)[2]
+# Nelson Aalen estimate for each transition
+na_survey12 <- nelson_aalen(subset(ms_survey, from==1 & to==2), Tstop,status ,Tstart)
+survey_a <- data.frame(regid = subset(ms_survey, from==1 & to==2)$regid,na12 = na_survey12) 
+na_survey13 <- nelson_aalen(subset(ms_survey, from==1 & to==3), Tstop,status ,Tstart)
+survey_c <- data.frame(regid = subset(ms_survey, from==1 & to==3)$regid,na13 = na_survey13) 
+new12 <- merge(survey,survey_a, by= "regid", all.x = TRUE) 
+sur_dat <- merge(new12,survey_c, by= "regid", all.x = TRUE) 
+sur_dat$na12 <- ifelse(is.na(sur_dat$na12), 0, sur_dat$na12)
+sur_dat$na13 <- ifelse(is.na(sur_dat$na13), 0, sur_dat$na13)
+sur_dat$stat1 <- sur_dat$disease_stat
+sur_dat$stat2 <- ifelse(sur_dat$disease_stat==1,0, sur_dat$death_stat)
+keep <- c("sex","m_tupakka3","kol_114","kol_hdl_115", "mit1_systbp1", "mit1_diastbp1",
+          "mit1_systbp2","mit1_diastbp2", "bmii_paino","bmii_pituus","kys1_k27",
+          "kys1_k38","kys1_k49","kys1_k39_m3","kys1_k39_m1", "kys1_k39_m4","na12","na13",
+          "stat1","stat2")
+#parallel imputation on only survey data
+cores_2_use <- 5
+cl <- makeCluster(cores_2_use)
+clusterSetRNGStream(cl, 9956)
+clusterExport(cl, "sur_dat")
+clusterEvalQ(cl, library(mice))
+imp_pars <- 
+  parLapply(cl = cl, X = 1:cores_2_use, fun = function(no){
+    mice(sur_dat, quickpred(sur_dat, exclude = c("regid", "age_July1_2000", "age_diagnosis", "age_death","age_June30_2018","ini_stat", "ini_time","healthy_stat","disease_stat","death_stat"), include = c("sex", "na12", "na13","stat1", "stat2"), mincor = 0.1, method = "kendall"), m=5, method="cart", maxit=15, minbucket = 15, cp = 1e-04, printFlag=FALSE)})
+stopCluster(cl)
+imp_merged <- imp_pars[[1]]
+for (n in 2:length(imp_pars)){
+  imp_merged <- 
+    ibind(imp_merged,
+          imp_pars[[n]])
+}
+write.mice.imputation(mi.res = imp_merged, name = "survey", include.varnames=TRUE, long=TRUE, mids2spss = TRUE, spss.dec = ",", dattype=NULL)
+c <- subset(sur_dat, select = -c(regid,age_July1_2000,age_diagnosis,age_death,age_June30_2018,ini_stat,disease_stat,ini_time, death_stat, healthy_stat))
+sur_corl <- round(cor(c, use = "pairwise.complete.obs" , method = "kendall"),3)
+sur.est_12 <- vector(mode = "list", length = 25)  
+sur.se_12 <- vector(mode = "list", length = 25) 
+sur.est_13 <- vector(mode = "list", length = 25)  
+sur.se_13 <- vector(mode = "list", length = 25)
+
+for (j in 1:25) {
+  
+  trans_mat <- trans.illdeath(c("healthy", "disese", "death"))
+  ms_survey <- msprep(time = c(NA,"age_diagnosis", "age_death" ),
+                       status = c(NA, "disease_stat","death_stat"),
+                       data = complete(imp_merged,j), 
+                       trans = trans_mat,
+                       start = list(state = survey$ini_stat, time = survey$ini_time),
+                       id = "regid",
+                       keep = c("sex","m_tupakka3","kol_114","kol_hdl_115", "mit1_systbp1", 
+                                "mit1_diastbp1","mit1_systbp2","mit1_diastbp2", "bmii_paino",
+                                "bmii_pituus","kys1_k27","kys1_k38","kys1_k49","kys1_k39_m3", 
+                                "kys1_k39_m1", "kys1_k39_m4"))
+  
+  #C-index, AIC and BIC 
+  wei_12 <-  weibreg(Surv(Tstart, Tstop, status)~ factor(sex) + factor(m_tupakka3) + kol_114 + 
+                       kol_hdl_115 +mit1_systbp1 + mit1_diastbp1 + mit1_systbp2 + mit1_diastbp2 + 
+                       bmii_paino + bmii_pituus + factor(kys1_k27) + factor(kys1_k38) + kys1_k49 +
+                       factor(kys1_k39_m3) + factor(kys1_k39_m1)+ sqrt(kys1_k39_m4), # 
+                     data = ms_survey[(ms_survey$from==1) & (ms_survey$to ==2),])
+  sur.est_12[[j]] <- as.array(wei_12$coefficients) 
+  sur.se_12[[j]] <- as.array(round(sqrt( diag( wei_12$var )),5)) 
+  
+  wei_13 <- weibreg(Surv(Tstart, Tstop, status)~ factor(sex) + factor(m_tupakka3) + kol_114 + 
+                        kol_hdl_115 +  mit1_systbp1 + mit1_diastbp1 + mit1_systbp2 + mit1_diastbp2 + 
+                        bmii_paino + bmii_pituus + factor(kys1_k27) + factor(kys1_k38) + 
+                        kys1_k49 + factor(kys1_k39_m3) + factor(kys1_k39_m1) + sqrt(kys1_k39_m4), 
+                      data = ms_survey[(ms_survey$from==1) & (ms_survey$to ==3),])
+    sur.est_13[[j]] <- as.array(wei_13$coefficients) 
+  sur.se_13[[j]] <- as.array(round(sqrt( diag( wei_13$var )),5)) 
+  
+}
+sur.estimate12 <- apply(array(as.numeric(unlist(sur.est_12)), dim=c(22,1)), 1, mean)
+sur.std.error12 <- apply(array(as.numeric(unlist(sur.se_12)), dim = c(22,1)),1, function(x) sqrt(mean(x^2)))
+sur.estimate13 <- apply(array(as.numeric(unlist(sur.est_13)), dim=c(22,1)), 1, mean)
+sur.std.error13 <- apply(array(as.numeric(unlist(sur.se_13)), dim = c(22,1)),1, function(x) sqrt(mean(x^2)))
+sur.mi12 <- cbind(sur.estimate12, sur.std.error12) 
+sur.mi13 <- cbind(sur.estimate13, sur.std.error13) 
+row.names(sur.mi12) <-c("factor(sex)2", "factor(m_tupakka3)1","kol_114","kol_hdl_115",
+                         "mit1_systbp1","mit1_diastbp1","mit1_systbp2","mit1_diastbp2",
+                         "bmii_paino","bmii_pituus","factor(kys1_k27)2","factor(kys1_k27)3",
+                         "factor(kys1_k27)4","factor(kys1_k38)2","factor(kys1_k38)3",
+                         "kys1_k49", "factor(kys1_k39_m3)1","factor(kys1_k39_m1)1","factor(kys1_k39_m1)2",
+                         "kys1_k39_m4","log(scale)", "log(shape)")
+row.names(sur.mi13) <-c("factor(sex)2", "factor(m_tupakka3)1","kol_114","kol_hdl_115",
+                         "mit1_systbp1","mit1_diastbp1","mit1_systbp2","mit1_diastbp2",
+                         "bmii_paino","bmii_pituus","factor(kys1_k27)2","factor(kys1_k27)3",
+                         "factor(kys1_k27)4","factor(kys1_k38)2","factor(kys1_k38)3",
+                         "kys1_k49", "factor(kys1_k39_m3)1","factor(kys1_k39_m1)1","factor(kys1_k39_m1)2",
+                         "kys1_k39_m4","log(scale)", "log(shape)")
+sur.mi12
+sur.mi13
+```
+
+```{r register data, include=FALSE}
+#########################################################################################
+#                                REGISTER DATA                                          #
+#########################################################################################
+tbl5 <- tbl(ph, in_schema("popasco", "hilmo"))%>% collect()
+tld2 <- tbl5 %>% mutate_at(.vars = c("koodi1", "koodi2"), function(x) substr(x,1,3))
+table(koodi1 = substr(tld2$koodi1, 1,3) %in% c("I20","I21","I22","I23","I24","I25"),
+      koodi2  = substr(tld2$koodi2, 1,3)%in% c("I20","I21","I22","I23","I24","I25"))
+r <- unique(unlist(Reduce(union, list(tld2$koodi1, tld2$koodi2), accumulate = TRUE)))
+rsub <- subset(r, (!r %in% strings))
+tld2 <- tld2 %>% replace_with_na_at(.vars = vars(koodi1, koodi2),condition = ~.x %in% rsub) 
+tld2_HD <- tld2 %>% mutate(koodi = coalesce(koodi1, koodi2))
+tld2_FHD <- tld2_HD %>% group_by(regid) %>% arrange(tupva) %>% filter(row_number() == 1) %>% 
+  ungroup() %>% arrange(regid)
+tbl6<- tbl(ph, in_schema("popasco", "vtjsample2000"))
+tbl7 <- full_join(tld2_FHD, tbl6, by="regid", copy = TRUE) %>% collect() %>% 
+  filter(((!is.na(tupva) & (tupva > as.Date("2000-07-01"))) | is.na(tupva)) &(age_July1_2000>= 30)) %>% collect()
+
+tbl7$sex <- ifelse(tbl7$sex=="M",1,2)
+tbl7_full <- tbl7 %>%
+  mutate(
+    age_diagnosis = ifelse(is.na(tupva),NA, 
+                           ifelse(pmin(tupva,as.Date("2000-07-01"))
+                                  ==tupva,age_July1_2000, 
+                                  age_July1_2000 + 
+                                    as.duration("2000-07-01" %--% tupva) / dyears(1))),
+    age_death = ifelse(is.na(deathdt),NA,age_July1_2000 + 
+                         as.duration("2000-07-01" %--% deathdt) / dyears(1)),
+    age_June30_2018 = age_July1_2000 +
+      as.duration("2000-07-01" %--% "2018-06-30") / dyears(1))
+tbl7_full$age_death <- ifelse(tbl7_full$age_death > tbl7_full$age_June30_2018, 
+                              NA, tbl7_full$age_death) 
+tbl7_full$age_diagnosis <- ifelse(tbl7_full$age_diagnosis > tbl7_full$age_June30_2018,
+                                  NA, tbl7_full$age_diagnosis) 
+```
+
+```{r Full data, include=FALSE}
+########################################################################################
+#                                    FULL DATA                                         #
+########################################################################################
+tbl7_full <- tbl7_full %>% rename(tulo_pvm =tupva , tk01_kuolinaika = deathdt) 
+
+a <- nrow(tbl4_full)
+b <- nrow(tbl7_full)
+
+tbl4_full$regid <- 1:a
+tbl7_full$regid <- (a+1):(a+b)
+survdata <- rbind.fill(tbl7_full,tbl4_full)
+survdata2 <- full_join(tbl4_full,tbl7_full, by = c("regid","age_diagnosis",
+                                                   "age_death","age_June30_2018"), 
+                       suffix = c("",""))
+survdata$regid <- 1:nrow(survdata)
+```
+
+
+
+```{r status construction, include=FALSE}
+survdata <- survdata %>% select(regid, age_July1_2000,tulo_pvm, age_diagnosis,tk01_kuolinaika,
+                                age_death,age_June30_2018,sex,m_tupakka3, kol_114,kol_hdl_115,
+                                mit1_systbp1,mit1_diastbp1,mit1_systbp2,mit1_diastbp2,
+                                bmii_paino,bmii_pituus,kys1_k27,kys1_k38,kys1_k49,
+                                kys1_k39_m3,kys1_k39_m1, kys1_k39_m4)
+survdata <- survdata %>% mutate(ini_stat = ifelse(is.na(survdata$age_diagnosis), 1, 
+                                                  ifelse(age_diagnosis > age_July1_2000,1,2)),
+                                 healthy_stat = ifelse(is.na(survdata$age_diagnosis), 1,
+                                                       as.numeric(age_diagnosis > age_July1_2000)),
+                                 disease_stat = ifelse(is.na(survdata$age_diagnosis), 0, 1),
+                                 death_stat =ifelse(is.na(survdata$age_death), 0, 1),
+                                 ini_time = ifelse(ini_stat==1, age_July1_2000, age_diagnosis)) 
+
+```
+
+```{r data modifications, include=FALSE}
+survdata$age_death <- ifelse(survdata$death_stat==1, survdata$age_death, 
+                             survdata$age_June30_2018) 
+survdata$age_diagnosis <- ifelse(survdata$disease_stat==1, 
+                                 survdata$age_diagnosis, survdata$age_death) 
+
+survdata$age_death <- ifelse((survdata$age_diagnosis == survdata$age_death), 
+                             (survdata$age_death+ (0.5/365)),
+                             survdata$age_death) 
+#dim(survdata[(is.na(survdata$age_diagnosis)) & (survdata$age_death<=survdata$age_June30_2018)
+#             & (!is.na(survdata$age_death)),])
+#dim(subset(survdata, disease_stat==0 & death_stat==1))
+survdata <- subset(survdata, age_diagnosis <= age_death)
+```
+
+```{r mstate long format, include=FALSE}
+survdata <- subset(survdata, select = -c(tulo_pvm, tk01_kuolinaika))
+keep <- c("sex","m_tupakka3","kol_114","kol_hdl_115", "mit1_systbp1", "mit1_diastbp1",
+          "mit1_systbp2","mit1_diastbp2", "bmii_paino","bmii_pituus","kys1_k27",
+          "kys1_k38","kys1_k49","kys1_k39_m3","kys1_k39_m1", "kys1_k39_m4")
+
+trans_mat <- trans.illdeath()
+ms_survdat <- msprep(time = c(NA,"age_diagnosis", "age_death" ),
+             status = c(NA,"disease_stat","death_stat"),
+             data = survdata,
+             trans = trans_mat,
+             start = list(state = survdata$ini_stat, time = survdata$ini_time),
+             id = "regid",
+             keep = keep)
+ms_survdat$Tstop <- ifelse(ms_survdat$Tstart==ms_survdat$Tstop, 
+                           ms_survdat$Tstop+ 0.5/365,ms_survdat$Tstop)  
+```
+
+```{r transition matrix2}
+dim(survdata)
+#dim(ms_survdat)
+n1 <- table(survdata$healthy_stat)[1]
+n2 <- table(survdata$disease_stat)[2]
+n12 <- sum(ms_survdat[(ms_survdat$from==1) & (ms_survdat$to==2),]$status)
+n13 <- sum(ms_survdat[(ms_survdat$from==1) & (ms_survdat$to==3),]$status)
+n11 <- n1 - (n12 + n13)
+n22 <- n2 - n23
+n33 <- table(survdata$death_stat)[2]
+```
+
+```{r variables}
+num_obs <- matrix(c(sum(!is.na(survdata$m_tupakka3)), sum(!is.na(survdata$kol_114)), sum(!is.na(survdata$kol_hdl_115)), 
+             sum(!is.na(survdata$mit1_systbp1)), sum(!is.na(survdata$mit1_diastbp1)), sum(!is.na(survdata$mit1_systbp2)),
+             sum(!is.na(survdata$mit1_diastbp2)), sum(!is.na(survdata$bmii_paino)), sum(!is.na(survdata$bmii_pituus)),
+             sum(!is.na(survdata$kys1_k27)), sum(!is.na(survdata$kys1_k38)), sum(!is.na(survdata$kys1_k49)),
+             sum(!is.na(survdata$kys1_k39_m3)), sum(!is.na(survdata$kys1_k39_m1)), sum(!is.na(survdata$kys1_k39_m4)),
+             sum(!is.na(survdata$koodi))), nrow = 16, ncol = 1)
+per_obs <- round(100* (num_obs/nrow(survdata)),2)
+a<- table(survdata$m_tupakka3, useNA = "ifany")
+b <-table(survdata$m_tupakka3, useNA = "ifany")/sum(!is.na(survdata$m_tupakka3))
+cbind(a,b * 100)
+summary(survdata$kol_114)
+round(sd(survdata$kol_114, na.rm = TRUE),3) 
+
+summary(survdata$kol_hdl_115)
+round(sd(survdata$kol_hdl_115,na.rm = TRUE),3)
+
+summary(survdata$mit1_systbp1)
+round(sd(survdata$mit1_systbp1,na.rm = TRUE),3)
+
+summary(survdata$mit1_diastbp1)
+round(sd(survdata$mit1_diastbp1,na.rm = TRUE),3)
+
+summary(survdata$mit1_systbp2)
+round(sd(survdata$mit1_systbp2,na.rm = TRUE),3)
+
+summary(survdata$mit1_diastbp2)
+round(sd(survdata$mit1_diastbp2,na.rm = TRUE),3)
+
+summary(survdata$bmii_paino)
+round(sd(survdata$bmii_paino,na.rm = TRUE), 3)
+
+summary(survdata$bmii_pituus)
+round(sd(survdata$bmii_pituus,na.rm = TRUE),3)
+
+table(survdata$kys1_k27, useNA = "ifany")
+round(100 * (table(survdata$kys1_k27, useNA = "ifany")/sum(!is.na(survdata$kys1_k27))),2)
+table(survdata$kys1_k38, useNA = "ifany")
+round(100 * (table(survdata$kys1_k38, useNA = "ifany")/sum(!is.na(survdata$kys1_k38))),2)
+
+summary(survdata$kys1_k49)
+round(sd(survdata$kys1_k49,na.rm = TRUE),3)
+
+table(survdata$kys1_k39_m3, useNA = "ifany")
+round(100 * table(survdata$kys1_k39_m3, useNA = "ifany")/sum(!is.na(survdata$kys1_k39_m3)),2)
+table(survdata$kys1_k39_m1, useNA = "ifany")
+round(100 * table(survdata$kys1_k39_m1, useNA = "ifany")/sum(!is.na(survdata$kys1_k39_m1)), 2)
+
+summary(survdata$kys1_k39_m4)
+round(sd(survdata$kys1_k39_m4,na.rm = TRUE),3)
+```
+
+```{r CCA, include=FALSE}
+CCA <- ms_survdat[complete.cases(ms_survdat),]
+CCA1 <- survdata[complete.cases(survdata),]
+dim(CCA1)
+#dim(ms_survdat)
+n1 <- table(CCA1$healthy_stat)[1]
+n2 <- table(CCA1$disease_stat)[2]
+n12 <- sum(CCA[(CCA$from==1) & (CCA$to==2),]$status)
+n13 <- sum(CCA[(CCA$from==1) & (CCA$to==3),]$status)
+n11 <- n1 - (n12 + n13)
+n22 <- n2 
+n33 <- table(CCA1$death_stat)[2]
+
+weib12 <- weibreg(Surv(Tstart, Tstop, status)~ factor(sex) + factor(m_tupakka3) + kol_114 + 
+                    kol_hdl_115 +mit1_systbp1 + mit1_diastbp1 + mit1_systbp2 + mit1_diastbp2 + 
+                    bmii_paino + bmii_pituus + factor(kys1_k27) + factor(kys1_k38) + kys1_k49 +
+                    factor(kys1_k39_m3) + factor(kys1_k39_m1)+ sqrt(kys1_k39_m4), 
+                  data = subset(CCA, from==1 & to ==2))
+
+var12 <- as.array(round(sqrt( diag( weib12$var )),5))   
+weib13 <- weibreg(Surv(Tstart, Tstop, status)~ factor(sex) + factor(m_tupakka3) + kol_114 + 
+                    kol_hdl_115 +  mit1_systbp1 + mit1_diastbp1 + mit1_systbp2 + mit1_diastbp2 + 
+                    bmii_paino + bmii_pituus + factor(kys1_k27) + factor(kys1_k38) + 
+                    kys1_k49 + factor(kys1_k39_m3) + factor(kys1_k39_m1) + sqrt(kys1_k39_m4), 
+                  data = subset(CCA, from==1 & to ==3))
+
+var13 <- as.array(round(sqrt( diag( weib13$var )),5))   
+
+est12 <- as.array(weib12$coefficients) 
+se12 <- as.array(round(sqrt( diag( weib12$var )),5)) 
+est13 <- as.array(weib13$coefficients) 
+se13 <- as.array(round(sqrt( diag( weib13$var )),5)) 
+cca12 <- cbind(est12, se12) 
+cca13 <- cbind(est13, se13) 
+row.names(cca12) <-c("factor(sex)2", "factor(m_tupakka3)1","kol_114","kol_hdl_115",
+                         "mit1_systbp1","mit1_diastbp1","mit1_systbp2","mit1_diastbp2",
+                         "bmii_paino","bmii_pituus","factor(kys1_k27)2","factor(kys1_k27)3",
+                         "factor(kys1_k27)4","factor(kys1_k38)2","factor(kys1_k38)3",
+                         "kys1_k49", "factor(kys1_k39_m3)1","factor(kys1_k39_m1)2",
+                         "kys1_k39_m4","log(scale)", "log(shape)")
+row.names(cca13) <-c("factor(sex)2", "factor(m_tupakka3)1","kol_114","kol_hdl_115",
+                         "mit1_systbp1","mit1_diastbp1","mit1_systbp2","mit1_diastbp2",
+                         "bmii_paino","bmii_pituus","factor(kys1_k27)2","factor(kys1_k27)3",
+                         "factor(kys1_k27)4","factor(kys1_k38)2","factor(kys1_k38)3",
+                         "kys1_k49", "factor(kys1_k39_m3)1","factor(kys1_k39_m1)2",
+                         "kys1_k39_m4","log(scale)", "log(shape)")
+
+cca12
+cca13
+```
+Nelson Aalen
+```{r nelson, include=FALSE}
+na12 <- nelson_aalen(subset(ms_survdat, from==1 & to==2), Tstop,status ,Tstart)
+a <- data.frame(regid = subset(ms_survdat, from==1 & to==2)$regid,na12 = na12) 
+na13 <- nelson_aalen(subset(ms_survdat, from==1 & to==3), Tstop,status ,Tstart)
+c <- data.frame(regid = subset(ms_survdat, from==1 & to==3)$regid,na13 = na13) 
+new1 <- merge(survdata,a, by= "regid", all.x = TRUE) 
+new_dat <- merge(new1,c, by= "regid", all.x = TRUE) 
+new_dat$na12 <- ifelse(is.na(new_dat$na12), 0, new_dat$na12)
+new_dat$na13 <- ifelse(is.na(new_dat$na13), 0, new_dat$na13)
+
+new_dat$stat1 <- new_dat$disease_stat
+new_dat$stat2 <- ifelse(new_dat$disease_stat==1,0, new_dat$death_stat)
+
+keep <- c("sex","m_tupakka3","kol_114","kol_hdl_115", "mit1_systbp1", "mit1_diastbp1",
+          "mit1_systbp2","mit1_diastbp2", "bmii_paino","bmii_pituus","kys1_k27",
+          "kys1_k38","kys1_k49","kys1_k39_m3","kys1_k39_m1", "kys1_k39_m4","na12","na13",
+          "stat1","stat2")
+
+```
+
+```{r parallel}
+
+cores_2_use <- 5
+
+cl <- makeCluster(cores_2_use)
+clusterSetRNGStream(cl, 9956)
+clusterExport(cl, "new_dat")
+clusterEvalQ(cl, library(mice))
+imp_pars <- 
+  parLapply(cl = cl, X = 1:cores_2_use, fun = function(no){
+    mice(new_dat, quickpred(new_dat, exclude = c("regid", "age_July1_2000", "age_diagnosis", "age_death","age_June30_2018","ini_stat", "ini_time","healthy_stat","disease_stat","death_stat"),include =  c("sex", "na12", "na13","stat1", "stat2"), mincor = 0.1, method = "kendall"), m=5, method="cart", maxit=15, minbucket = 15, cp = 1e-04, printFlag=FALSE)})
+stopCluster(cl)
+imp_merged_1 <- imp_pars[[1]]
+for (n in 2:length(imp_pars)){
+  imp_merged_1 <- 
+    ibind(imp_merged_1,
+          imp_pars[[n]])
+}
+plot(imp_merged_1, c("m_tupakka3","kol_114","kol_hdl_115"))
+plot(imp_merged_1, c("mit1_systbp1", "mit1_diastbp1","mit1_systbp2"))
+plot(imp_merged_1, c("mit1_diastbp2", "bmii_paino","bmii_pituus"))
+plot(imp_merged_1, c("kys1_k27", "kys1_k38","kys1_k49"))
+plot(imp_merged_1, c("kys1_k39_m3","kys1_k39_m1","kys1_k39_m4"))
+
+```
+
+```{r analysis of imputed data}
+est_12 <- vector(mode = "list", length = 25)  
+se_12 <- vector(mode = "list", length = 25) 
+est_13 <- vector(mode = "list", length = 25)  
+se_13 <- vector(mode = "list", length = 25) 
+for (j in 1:25) {
+  
+  trans_mat <- trans.illdeath(c("healthy", "disese", "death"))
+  ms_survdat <- msprep(time = c(NA,"age_diagnosis", "age_death" ),
+                       status = c(NA, "disease_stat","death_stat"),
+                       data = complete(imp_merged_1,j), 
+                       trans = trans_mat,
+                       start = list(state = survdata$ini_stat, time = survdata$ini_time),
+                       id = "regid",
+                       keep = c("sex","m_tupakka3","kol_114","kol_hdl_115", "mit1_systbp1", 
+                                "mit1_diastbp1","mit1_systbp2","mit1_diastbp2", "bmii_paino",
+                                "bmii_pituus","kys1_k27","kys1_k38","kys1_k49","kys1_k39_m3", 
+                                "kys1_k39_m1", "kys1_k39_m4"))
+ 
+  wei_12 <-  weibreg(Surv(Tstart, Tstop, status)~ factor(sex) + factor(m_tupakka3) + kol_114 + 
+                    kol_hdl_115 +mit1_systbp1 + mit1_diastbp1 + mit1_systbp2 + mit1_diastbp2 + 
+                    bmii_paino + bmii_pituus + factor(kys1_k27) + factor(kys1_k38) + kys1_k49 +
+                    factor(kys1_k39_m3) + factor(kys1_k39_m1)+ sqrt(kys1_k39_m4), 
+                  data = ms_survdat[(ms_survdat$from==1) & (ms_survdat$to ==2),])
+  est_12[[j]] <- as.array(wei_12$coefficients) 
+  se_12[[j]] <- as.array(round(sqrt( diag( wei_12$var )),5)) 
+  
+  wei_13 <- weibreg(Surv(Tstart, Tstop, status)~ factor(sex) + factor(m_tupakka3) + kol_114 + 
+                    kol_hdl_115 +  mit1_systbp1 + mit1_diastbp1 + mit1_systbp2 + mit1_diastbp2 + 
+                    bmii_paino + bmii_pituus + factor(kys1_k27) + factor(kys1_k38) + 
+                    kys1_k49 + factor(kys1_k39_m3) + factor(kys1_k39_m1) + sqrt(kys1_k39_m4), 
+                    data = ms_survdat[(ms_survdat$from==1) & (ms_survdat$to ==3),])
+  est_13[[j]] <- as.array(wei_13$coefficients) 
+  se_13[[j]] <- as.array(round(sqrt( diag( wei_13$var )),5)) 
+ 
+  
+}
+estimate12 <- apply(array(as.numeric(unlist(est_12)), dim=c(22,1)), 1, mean)
+std.error12 <- apply(array(as.numeric(unlist(se_12)), dim = c(22,1)),1, function(x) sqrt(mean(x^2)))
+estimate13 <- apply(array(as.numeric(unlist(est_13)), dim=c(22,1)), 1, mean)
+std.error13 <- apply(array(as.numeric(unlist(se_13)), dim = c(22,1)),1, function(x) sqrt(mean(x^2)))
+mass.mi12 <- cbind(estimate12, std.error12) 
+mass.mi13 <- cbind(estimate13, std.error13) 
+row.names(mass.mi12) <-c("factor(sex)2", "factor(m_tupakka3)1","kol_114","kol_hdl_115",
+                         "mit1_systbp1","mit1_diastbp1","mit1_systbp2","mit1_diastbp2",
+                         "bmii_paino","bmii_pituus","factor(kys1_k27)2","factor(kys1_k27)3",
+                         "factor(kys1_k27)4","factor(kys1_k38)2","factor(kys1_k38)3",
+                         "kys1_k49", "factor(kys1_k39_m3)1","factor(kys1_k39_m1)1","factor(kys1_k39_m1)2",
+                         "kys1_k39_m4","log(scale)", "log(shape)")
+row.names(mass.mi13) <-c("factor(sex)2", "factor(m_tupakka3)1","kol_114","kol_hdl_115",
+                         "mit1_systbp1","mit1_diastbp1","mit1_systbp2","mit1_diastbp2",
+                         "bmii_paino","bmii_pituus","factor(kys1_k27)2","factor(kys1_k27)3",
+                         "factor(kys1_k27)4","factor(kys1_k38)2","factor(kys1_k38)3",
+                         "kys1_k49", "factor(kys1_k39_m3)1","factor(kys1_k39_m1)1","factor(kys1_k39_m1)2",
+                         "kys1_k39_m4","log(scale)", "log(shape)")
+mass.mi12
+mass.mi13
+
+```
+
+

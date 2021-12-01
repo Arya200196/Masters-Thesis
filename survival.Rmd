@@ -1,0 +1,301 @@
+---
+title: "Mass imputation: simulation"
+author: Tommi H?rk?nen
+output: html_document
+---
+
+```{r settings, echo=FALSE}
+library(rvest)
+library(plyr)
+library(dplyr)
+library(data.table)
+library(dtplyr)
+library(randomForest)
+library(rpart)
+library(mice)
+library(lubridate)
+library(parallel)
+library(survival)
+library(eha)
+
+options(stringsAsFactors=FALSE,
+        xtable.type="html",
+        width=110)
+knitr::opts_chunk$set(comment=NA, echo=FALSE, tidy=TRUE)
+```
+
+# Generate data
+
+```{r parallel}
+n.sim <- 15 # number of simulated datasets
+N <- 10^5 # population
+n_1 <- 10^3 # survey
+n_5 <- 5*10^3
+n_10 <- 10^4
+n_20 <- 2*10^4
+
+nelson_aalen <- 
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+  
+mass.f <- function(i) {
+    cat(i, "\r")
+  
+H <- within(data.frame(id = seq(1,N), xt=runif(N, 0, 50), x1=rnorm(N, 2, 1), x2=rnorm(N, -2, 1)), {
+  x3 <- rnorm(N, 0.5*x1 + 0.5*x2, 2)
+  x4 <- rnorm(N, 0.3333*x1 + 0.3333*x2 + 0.3333*x3, 2 )
+  lp1 <- 0
+  lp2 <- -2 + 0.5*x1 + 0.2*x2 + 0.1*x3 + 0.2*x4
+  lp3 <- 0.5*x1 + 0.2*x2 + 0.1*x3 + 0.2*x4
+  lp4 <- -2 + 0.5*x1 + 0.2*x2 + 0.1*x3 + 0.2*x4
+  P1 <- exp(lp1)/(exp(lp2)+ exp(lp3)+exp(lp4)+exp(lp1))
+  P2 <- exp(lp2)/(exp(lp1)+ exp(lp3)+exp(lp4)+exp(lp2))
+  P3 <- exp(lp3)/(exp(lp2)+ exp(lp1)+exp(lp4)+exp(lp3))
+  P4 <- exp(lp4)/(exp(lp2)+ exp(lp3)+exp(lp1)+exp(lp4))
+  mChoices <- t(apply(cbind(P1,P2,P3,P4), 1, rmultinom, n = 1, size = 1))
+  x5 <- apply(mChoices, 1, function(x) which(x==1))
+  x5 <- as.factor(x5)
+  lp <-   0.05*x1 + 0.2*x2 + 0.1*x3 + 0.02*x4 + log(5)*(x5==2) + log(2)*(x5==3) + log(1.5)*(x5==4) 
+  Tm <- qweibull(runif(N,pweibull(xt,shape = 7.5, scale = 84*exp(-lp/7.5)),1), shape=7.5, scale=84*exp(-lp/7.5))
+  
+  Cens <- 100
+  
+  time_M <- pmin(Tm,Cens)
+  event_M <- time_M == Tm
+  T_log <- log(time_M)})  
+d <- subset(H, select= -c(mChoices,lp,lp1,lp2,lp3,lp4,P1,P2,P3,P4,Cens,Tm))
+d$na <- nelson_aalen(d,time_M,event_M,xt)
+D<- lapply(list(d_1= within(data.frame(survey=c(rep(TRUE, n_1), rep(FALSE, N-n_1)),
+                                       d), {
+                                         x3.obs <- d$x3
+                                         x3.obs[!survey] <- NA
+                                         x4.obs <- d$x4
+                                         x4.obs[!survey] <- NA
+                                         x5.obs <- d$x5
+                                         x5.obs[!survey] <- NA}),
+                d_5= within(data.frame(survey=c(rep(TRUE, n_5), rep(FALSE, N-n_5)),
+                                       d), {
+                                         x3.obs <- d$x3
+                                         x3.obs[!survey] <- NA
+                                         x4.obs <- d$x4
+                                         x4.obs[!survey] <- NA
+                                         x5.obs <- d$x5
+                                         x5.obs[!survey] <- NA}),
+                
+                d_10= within(data.frame(survey=c(rep(TRUE, n_10), rep(FALSE, N-n_10)),
+                                        d), {
+                                          x3.obs <- d$x3
+                                          x3.obs[!survey] <- NA
+                                          x4.obs <- d$x4
+                                          x4.obs[!survey] <- NA
+                                          x5.obs <- d$x5
+                                          x5.obs[!survey] <- NA}),
+                d_20= within(data.frame(survey=c(rep(TRUE, n_20), rep(FALSE, N-n_20)),
+                                        d), {
+                                          x3.obs <- d$x3
+                                          x3.obs[!survey] <- NA
+                                          x4.obs <- d$x4
+                                          x4.obs[!survey] <- NA
+                                          x5.obs <- d$x5
+                                          x5.obs[!survey] <- NA})), 
+           function(x) {
+             x
+             
+           })
+
+tabM_full <- table(d$event, d$x5)
+### Full Analysis
+res.full <- weibreg(Surv(xt,time_M, event_M) ~ x1 + x2 + x3 + x4 + factor(x5), data = d)
+est_mate <- vector(mode = "list", length = 4)
+sder <- vector(mode = "list", length = 4)
+tab_split <- vector(mode = "list", length = 4)
+tab_NA <- vector(mode = "list", length = 4)
+tab_white <- vector(mode = "list", length = 4)
+tab <- vector(mode = "list", length = 4)
+cor.sim_split <- vector(mode = "list", length = 4)
+cor.sim_NA <- vector(mode = "list", length = 4)
+cor.sim_white <- vector(mode = "list", length = 4)
+cor.sim <- vector(mode = "list", length = 4)
+res_var <- matrix(0,20,6)
+rownames(res_var) <- c("res.x3_1","res.x3_5","res.x3_10","res.x3_20","res.x4_1","res.x4_5","res.x4_10","res.x4_20", "res.x5.2_1","res.x5.2_5","res.x5.2_10","res.x5.2_20","res.x5.3_1","res.x5.3_5","res.x5.3_10","res.x5.3_20","res.x5.4_1","res.x5.4_5","res.x5.4_10","res.x5.4_20")
+res_se <- matrix(0,20,6)
+rownames(res_se) <- c("x3_1","x3_5","x3_10","x3_20","x4_1","x4_5","x4_10","x4_20","x5.2_1","x5.2_5","x5.2_10","x5.2_20","x5.3_1","x5.3_5","x5.3_10","x5.3_20","x5.4_1","x5.4_5","x5.4_10","x5.4_20")
+### Mass imputation
+for (l in 1:4) {
+    cat_TTE <- survSplit(Surv((D[[l]]$time_M - D[[l]]$xt), D[[l]]$event_M)~., cut = c(10,20,30,40,50,60), episode = "timegroup", data = D[[l]])
+    cat_TTE2 <- cat_TTE %>% group_by(id) %>% arrange(-tstart) %>% filter(row_number() == 1) %>% ungroup() %>% arrange(id)
+    d.mi_split <- mice(subset(cat_TTE2, select = -c(id,x3,x4,x5,tstop,tstart,survey,T_log,na)), m=25, method="cart", maxit=15,minbucket = 15, cp = 1e-04, printFlag=FALSE)
+    d.mi_NA <- mice(subset(D[[l]], select = -c(id,x3,x4,x5,xt,time_M,survey,T_log)), m=25, method="cart", maxit=15,minbucket = 15, cp = 1e-04, printFlag=FALSE)
+    d.mi_white <- mice(subset(D[[l]], select = -c(id,x3,x4,x5,xt,time_M,survey,T_log)), m=25, method=c("","","","","polyreg","norm","norm"), maxit=15,minbucket = 15, cp = 1e-04, printFlag=FALSE)
+    d.mi <- mice(subset(D[[l]], select = -c(id,x3,x4,x5,survey,na)), m=25, method="cart", maxit=15,minbucket = 15, cp = 1e-04, printFlag=FALSE)
+      
+  
+  tab_split <- table(complete(d.mi_split)$event,complete(d.mi_split)$x5.obs)
+  tab_NA <- table(complete(d.mi_NA)$event,complete(d.mi_NA)$x5.obs)
+  tab_white <- table(complete(d.mi_white)$event,complete(d.mi_white)$x5.obs)
+  tab <- table(complete(d.mi)$event,complete(d.mi)$x5.obs)
+  ### Survey Analysis
+  res.survey <- weibreg(Surv(xt,time_M,event_M) ~ x1 + x2 + x3 + x4 + factor(x5), data=subset(D[[l]], survey==TRUE))
+  cor.sim_split[[l]] <- cbind(sim=i, cor(cbind(subset(complete(d.mi_split),select = -x5.obs),d$x3,d$x4), method="spearman", use="p"))
+cor.sim_NA[[l]]<- cbind(sim=i, cor(cbind(subset(complete(d.mi_NA), select =-x5.obs), d$x3,d$x4),method="spearman", use="p"))
+cor.sim_white[[l]]<- cbind(sim=i, cor(cbind(subset(complete(d.mi_white), select = -x5.obs), d$x3,d$x4),method="spearman", use="p"))
+cor.sim[[l]] <- cbind(sim=i, cor(cbind(subset(complete(d.mi), select = -x5.obs), d$x3,d$x4),method="spearman", use="p"))  
+  ### Imputed Data Analysis
+  est_split <- vector(mode = "list", length = 25)  
+  se_split <- vector(mode = "list", length = 25)
+  est_NA <- vector(mode = "list", length = 25)  
+  se_NA <- vector(mode = "list", length = 25)
+  est_white <- vector(mode = "list", length = 25)  
+  se_white <- vector(mode = "list", length = 25) 
+  est <- vector(mode = "list", length = 25)  
+  se <- vector(mode = "list", length = 25) 
+  # Length depends on how many dataframe you want to append.
+  
+  for (j in seq(1,25, by = 1)) {
+    
+    wei_split <- weibreg(Surv(d$xt, d$time_M, d$event_M)~x1+x2+x3.obs+x4.obs+factor(x5.obs), data = complete(d.mi_split, j))
+    est_split[[j]] <- as.array(wei_split$coefficients) #append your new dataframe
+    se_split[[j]] <- as.array(round(sqrt( diag( wei_split$var )),5))
+    
+    wei_NA <- weibreg(Surv(d$xt, d$time_M, d$event_M)~x1+x2+x3.obs+x4.obs+factor(x5.obs), data = complete(d.mi_NA, j))
+    est_NA[[j]] <- as.array(wei_NA$coefficients) #append your new dataframe
+    se_NA[[j]] <- as.array(round(sqrt( diag( wei_NA$var )),5))
+    
+    wei_white <- weibreg(Surv(d$xt, d$time_M, d$event_M)~x1+x2+x3.obs+x4.obs+factor(x5.obs), data = complete(d.mi_white, j))
+    est_white[[j]] <- as.array(wei_white$coefficients) #append your new dataframe
+    se_white[[j]] <- as.array(round(sqrt( diag( wei_white$var )),5))
+    
+    wei <- weibreg(Surv(d$xt, d$time_M, d$event_M)~x1+x2+x3.obs+x4.obs+factor(x5.obs), data = complete(d.mi, j))
+    est[[j]] <- as.array(wei$coefficients) #append your new dataframe
+    se[[j]] <- as.array(round(sqrt( diag( wei$var )),5))
+  }
+  estimate_split <- apply(array(as.numeric(unlist(est_split)), dim=c(9,1)), 1, mean)
+  std.error_split <- apply(array(as.numeric(unlist(se_split)), dim = c(9,1)),1, function(x) sqrt(mean(x^2)))
+  mass.mi_split <- cbind(estimate_split, std.error_split) 
+  row.names(mass.mi_split) <- c("x1","x2","x3.obs","x4.obs","factor(x5.obs)2","factor(x5.obs)3","factor(x5.obs)4","log(scale)","log(shape)")
+  
+  estimate_NA <- apply(array(as.numeric(unlist(est_NA)), dim=c(9,1)), 1, mean)
+  std.error_NA <- apply(array(as.numeric(unlist(se_NA)), dim = c(9,1)),1, function(x) sqrt(mean(x^2)))
+  mass.mi_NA <- cbind(estimate_NA, std.error_NA) 
+  row.names(mass.mi_NA) <- c("x1","x2","x3.obs","x4.obs","factor(x5.obs)2","factor(x5.obs)3","factor(x5.obs)4","log(scale)","log(shape)")
+  
+  estimate_white <- apply(array(as.numeric(unlist(est_white)), dim=c(9,1)), 1, mean)
+  std.error_white <- apply(array(as.numeric(unlist(se_white)), dim = c(9,1)),1, function(x) sqrt(mean(x^2)))
+  mass.mi_white <- cbind(estimate_white, std.error_white) 
+  row.names(mass.mi_white) <- c("x1","x2","x3.obs","x4.obs","factor(x5.obs)2","factor(x5.obs)3","factor(x5.obs)4","log(scale)","log(shape)")
+  
+  estimate <- apply(array(as.numeric(unlist(est)), dim=c(9,1)), 1, mean)
+  std.error <- apply(array(as.numeric(unlist(se)), dim = c(9,1)),1, function(x) sqrt(mean(x^2)))
+  mass.mi <- cbind(estimate, std.error) 
+  row.names(mass.mi) <- c("x1","x2","x3.obs","x4.obs","factor(x5.obs)2","factor(x5.obs)3","factor(x5.obs)4","log(scale)","log(shape)")
+  res_var[l,] <- c(full=res.full$coefficients["x3"],
+              survey=res.survey$coefficients["x3"],
+              mass.mi_split=mass.mi_split["x3.obs","estimate_split"],
+              mass.mi_NA=mass.mi_NA["x3.obs","estimate_NA"],
+              mass.mi_white=mass.mi_white["x3.obs","estimate_white"],
+              mass.mi=mass.mi["x3.obs","estimate"])
+  res_var[l+4,] <- c(full=res.full$coefficients["x4"],
+              survey=res.survey$coefficients["x4"],
+              mass.mi_split=mass.mi_split["x4.obs","estimate_split"],
+              mass.mi_NA=mass.mi_NA["x4.obs","estimate_NA"],
+              mass.mi_white=mass.mi_white["x4.obs","estimate_white"],
+              mass.mi=mass.mi["x4.obs","estimate"])
+  res_var[l+8,] <- c(full= res.full$coefficients["factor(x5)2"], 
+                survey=res.survey$coefficients["factor(x5)2"],
+                mass.mi_split=mass.mi_split["factor(x5.obs)2","estimate_split"],
+                mass.mi_NA=mass.mi_NA["factor(x5.obs)2","estimate_NA"],
+                mass.mi_white=mass.mi_white["factor(x5.obs)2","estimate_white"],
+                mass.mi=mass.mi["factor(x5.obs)2","estimate"])
+  
+  res_var[l+12,] <- c(full= res.full$coefficients["factor(x5)3"], 
+                survey=res.survey$coefficients["factor(x5)3"],
+                mass.mi_split=mass.mi_split["factor(x5.obs)3","estimate_split"],
+                mass.mi_NA=mass.mi_NA["factor(x5.obs)3","estimate_NA"],
+                mass.mi_white=mass.mi_white["factor(x5.obs)3","estimate_white"],
+                mass.mi=mass.mi["factor(x5.obs)3","estimate"])
+  
+  res_var[l+16,] <- c(full= res.full$coefficients["factor(x5)4"], 
+                survey=res.survey$coefficients["factor(x5)4"],
+                mass.mi_split=mass.mi_split["factor(x5.obs)4","estimate_split"],
+                mass.mi_NA=mass.mi_NA["factor(x5.obs)4","estimate_NA"],
+                mass.mi_white=mass.mi_white["factor(x5.obs)4","estimate_white"],
+                mass.mi=mass.mi["factor(x5.obs)4","estimate"])
+  
+  res_se[l,] <- c(full=round(sqrt( diag(res.full$var)),5)["x3"],
+                 survey=round(sqrt( diag(res.survey$var)),5)["x3"],
+                 mass.mi_split=mass.mi_split["x3.obs","std.error_split"],
+                 mass.mi_NA=mass.mi_NA["x3.obs","std.error_NA"],
+                 mass.mi_white=mass.mi_white["x3.obs","std.error_white"],
+                 mass.mi=mass.mi["x3.obs","std.error"])
+  res_se[l+4,] <- c(full=round(sqrt( diag(res.full$var)),5)["x4"],
+                 survey=round(sqrt( diag(res.survey$var)),5)["x4"],
+                 mass.mi_split=mass.mi_split["x4.obs","std.error_split"],
+                 mass.mi_NA=mass.mi_NA["x4.obs","std.error_NA"],
+                 mass.mi_white=mass.mi_white["x4.obs","std.error_white"],
+                 mass.mi=mass.mi["x4.obs","std.error"])
+  res_se[l+8,] <- c(full= round(sqrt( diag(res.full$var)),5)["factor(x5)2"], 
+                   survey=round(sqrt( diag(res.survey$var)),5)["factor(x5)2"],
+                   mass.mi_split=mass.mi_split["factor(x5.obs)2","std.error_split"],
+                   mass.mi_NA=mass.mi_NA["factor(x5.obs)2","std.error_NA"],
+                   mass.mi_white=mass.mi_white["factor(x5.obs)2","std.error_white"],
+                   mass.mi=mass.mi["factor(x5.obs)2","std.error"])
+  
+  res_se[l+12,] <- c(full= round(sqrt( diag(res.full$var)),5)["factor(x5)3"], 
+                   survey=round(sqrt( diag(res.survey$var)),5)["factor(x5)3"],
+                   mass.mi_split=mass.mi_split["factor(x5.obs)3","std.error_split"],
+                   mass.mi_NA=mass.mi_NA["factor(x5.obs)3","std.error_NA"],
+                   mass.mi_white=mass.mi_white["factor(x5.obs)3","std.error_white"],
+                   mass.mi=mass.mi["factor(x5.obs)3","std.error"])
+  
+  res_se[l+16,] <- c(full= round(sqrt( diag(res.full$var)),5)["factor(x5)4"], 
+                   survey=round(sqrt( diag(res.survey$var)),5)["factor(x5)4"],
+                   mass.mi_split=mass.mi_split["factor(x5.obs)4","std.error_split"],
+                   mass.mi_NA=mass.mi_NA["factor(x5.obs)4","std.error_NA"],
+                   mass.mi_white=mass.mi_white["factor(x5.obs)4","std.error_white"],
+                   mass.mi=mass.mi["factor(x5.obs)4","std.error"])
+  
+  
+}
+
+
+return(list(res_var, res_se, tabM_full,tab_split,tab_NA,tab_white,tab, cor.sim_split,cor.sim_NA,cor.sim_white,cor.sim))
+}
+
+
+timestamp()
+mc.res <- mclapply(1:n.sim, mass.f, mc.cores=10)
+timestamp()
+```
+
+
+```{r parallel2}
+save(mc.res, file = paste0("mc.res_45sim-", format(Sys.Date(), format="%Y-%m-%d:%H:%M:%S"),".Rdata"))
+      
+timestamp()
+  mc.res <- mclapply(1:n.sim, mass.f, mc.cores=10)
+timestamp()
+save(mc.res, file = paste0("mc.res_60sim-", format(Sys.Date(), format="%Y-%m-%d:%H:%M:%S"),".Rdata"))
+
+```
+
