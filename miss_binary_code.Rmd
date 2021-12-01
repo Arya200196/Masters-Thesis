@@ -1,6 +1,5 @@
 ---
 title: "Mass imputation: simulation"
-author: Tommi H?rk?nen
 output: html_document
 ---
 
