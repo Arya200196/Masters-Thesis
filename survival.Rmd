@@ -33,31 +33,31 @@ n_5 <- 5*10^3
 n_10 <- 10^4
 n_20 <- 2*10^4
 
-nelson_aalen <- 
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
 
-
-
-
-
-
-
-
-
-
-
-
-  
+  nelson_aalen <- function(data, timevar, statusvar, starttime) {
+  #  mice:::install.on.demand("survival")
+    if (!is.data.frame(data)) 
+      stop("Data must be a data frame")
+    timevar <- as.character(substitute(timevar))
+    statusvar <- as.character(substitute(statusvar))
+    time <- data[, timevar]
+    status <- data[, statusvar]
+    if(missing(starttime)){
+      hazard1 <- survival::basehaz(survival::coxph(survival::Surv(time, status) ~ 1))
+      idx1 <- match(time, hazard1[, "time"])
+      haz1 <- hazard1[idx1, "hazard"]
+      return(haz1) }
+    
+    else {
+      starttime <- as.character(substitute(starttime))
+      ini_time <- data[, starttime]
+      X <- rep(1, nrow(data))
+      cox_out <- survival::coxph(survival::Surv(ini_time, time, status) ~ X)
+      cox_out$coefficients["X"] <- 0
+      haz <- predict(cox_out, newdata = data.frame(ini_time, time,  0, 1), type = "expected")
+      return(haz)
+    }
+  } 
 mass.f <- function(i) {
     cat(i, "\r")
   
