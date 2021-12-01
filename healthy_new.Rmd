@@ -1,5 +1,4 @@
 ---
-title: "CR model"
 author: "Arya"
 date: "9/16/2020"
 output: pdf_document
